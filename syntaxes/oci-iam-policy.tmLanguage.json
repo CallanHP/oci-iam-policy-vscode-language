@@ -1,0 +1,23 @@
+{
+  "scopeName": "source.oci-iam-policy",
+  "patterns": [
+    { "include": "#string" },
+    { "include": "#regex" },
+    { "include": "#ocid" },
+    { "include": "#permissions" },
+    { "include": "#keywords" },
+    { "include": "#operators" },
+    { "include": "#punctuation" },
+    { "include": "#identifier" }
+  ],
+  "repository": {
+    "string": { "name": "string.quoted.single.oci-iam-policy", "begin": "'", "end": "'", "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.oci-iam-policy" }] },
+    "regex": { "name": "string.regexp.oci-iam-policy", "begin": "(?<!\\S)/(?=\\S)", "end": "/", "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.oci-iam-policy" }] },
+    "ocid": { "match": "\\bocid1\\.[A-Za-z0-9._-]+\\b", "name": "constant.other.ocid.oci-iam-policy" },
+    "permissions": { "match": "\\b[A-Z][A-Z0-9_]*\\b", "name": "constant.language.permission.oci-iam-policy" },
+    "keywords": { "match": "(?i)\\b(?:allow|deny|endorse|admit|define|group|dynamic-group|tenancy|service|any-user|any-group|inspect|read|use|manage|associate|to|as|in|with|where|any|all|id|of|sets-intersect|any-tenancy|compartment)\\b", "name": "keyword.control.oci-iam-policy" },
+    "operators": { "match": "!=|=|(?i)\\bin\\b", "name": "keyword.operator.comparison.oci-iam-policy" },
+    "punctuation": { "match": "[{}(),]", "name": "punctuation.separator.oci-iam-policy" },
+    "identifier": { "match": "\\b[A-Za-z_][A-Za-z0-9_.-]*\\b", "name": "variable.other.oci-iam-policy" }
+  }
+}

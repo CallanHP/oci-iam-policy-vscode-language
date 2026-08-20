@@ -1,0 +1,35 @@
+{
+  "name": "oci-iam-policy",
+  "displayName": "OCI IAM Policy",
+  "description": "Syntax highlighting, formatting, and diagnostics for OCI IAM policy statements.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": { "vscode": "^1.95.0" },
+  "categories": ["Programming Languages", "Formatters"],
+  "main": "./out/src/extension.js",
+  "activationEvents": ["onLanguage:oci-iam-policy"],
+  "contributes": {
+    "languages": [{
+      "id": "oci-iam-policy",
+      "aliases": ["OCI IAM Policy", "oci-iam-policy"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "oci-iam-policy",
+      "scopeName": "source.oci-iam-policy",
+      "path": "./syntaxes/oci-iam-policy.tmLanguage.json"
+    }]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "test": "npm run compile && node --test out/test/**/*.test.js",
+    "package": "npm run compile && npx @vscode/vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^3.2.1",
+    "typescript": "^5.7.2"
+  }
+}
