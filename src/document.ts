@@ -2,6 +2,27 @@
 import { formatPolicyStatement, parsePolicyStatement, PolicySyntaxError } from "./policy";
 
 export interface StatementSpan { start: number; end: number; text: string; }
+export interface StatementDiagnostic { message: string; offset: number; length: number; code?: string; }
+
+/** Stable internal codes for parser diagnostics that can safely be corrected. */
+export function parserQuickFixCode(message: string): string | undefined {
+  const codes: Record<string, string> = {
+    "Invalid policy statement type; expected allow, deny, endorse, admit, or define": "oci-iam.fix.statement-type",
+    "Invalid principal type; expected group, dynamic-group, tenancy, service, any-user, or any-group": "oci-iam.fix.principal-type",
+    "Invalid policy verb; expected inspect, read, use, manage, or associate": "oci-iam.fix.verb",
+    "Invalid location type; expected compartment or tenancy": "oci-iam.fix.location-type",
+    "Invalid resource for associate; expected local-peering-gateways, dns-zones, dns-views, dns-resolver, or dns-records": "oci-iam.fix.associate-resource",
+    "Invalid associated resource; expected local-peering-gateways, dns-zones, dns-views, dns-resolver, or dns-records": "oci-iam.fix.associated-resource",
+    "Invalid association location; expected compartment, tenancy, or any-tenancy": "oci-iam.fix.association-location",
+    "Invalid OCID for a principal specified by 'id'": "oci-iam.fix.remove-principal-id",
+    "Invalid OCID for a location specified by 'id'": "oci-iam.fix.remove-location-id",
+    "List values must be enclosed in single quotes": "oci-iam.fix.quote-list-member",
+    "Expected a location beginning with 'in'": "oci-iam.fix.insert-in",
+    "Expected an association after 'with'": "oci-iam.fix.insert-with",
+    "Expected 'as' before the define OCID": "oci-iam.fix.insert-as",
+  };
+  return codes[message];
+}
 
 interface DocumentLine { start: number; contentEnd: number; text: string; }
 
@@ -61,4 +82,13 @@ export function formatDocument(text: string): string {
   return result + text.slice(cursor);
 }
 
-export function statementError(span: StatementSpan): string | undefined { try { parsePolicyStatement(span.text); return undefined; } catch (error) { return error instanceof PolicySyntaxError ? error.message : "unexpected parser error"; } }
+export function statementDiagnostic(span: StatementSpan): StatementDiagnostic | undefined {
+  try { parsePolicyStatement(span.text); return undefined; } catch (error) {
+    if (error instanceof PolicySyntaxError) return { message: error.message, offset: error.offset, length: error.length, code: parserQuickFixCode(error.message) };
+    // Keep diagnostics safe even if a future parser bug escapes its normal error path.
+    return { message: "unexpected parser error", offset: span.text.length, length: 0 };
+  }
+}
+
+/** Compatibility helper for non-diagnostic callers. */
+export function statementError(span: StatementSpan): string | undefined { return statementDiagnostic(span)?.message; }

@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatDocument, logicalTrailingWhitespace, splitStatements, statementError } from "../src/document";
+import { formatDocument, logicalTrailingWhitespace, splitStatements, statementDiagnostic, statementError } from "../src/document";
 import { formatPolicyStatement, parsePolicyStatement, PolicySyntaxError } from "../src/policy";
+import { statementQuickFix, uniqueVocabularyCorrection } from "../src/quick-fixes";
+
+function quickFix(source: string) {
+  const span = splitStatements(source)[0];
+  const diagnostic = statementDiagnostic(span);
+  assert.ok(diagnostic, "expected parser diagnostic");
+  const fix = statementQuickFix(span, diagnostic);
+  assert.ok(fix, `expected quick fix for ${diagnostic.message}`);
+  const result = source.slice(0, span.start + fix.offset) + fix.text + source.slice(span.start + fix.offset + fix.length);
+  return { diagnostic, fix, result };
+}
 
 test("parses and canonicalizes supported statement shapes", () => {
   const cases = [
@@ -54,7 +65,7 @@ test("splits logical blocks and reports full invalid statement errors", () => {
   const spans = splitStatements(source);
   assert.equal(spans.length, 2);
   assert.equal(statementError(spans[0]), undefined);
-  assert.equal(statementError(spans[1]), "invalid or missing verb");
+  assert.equal(statementError(spans[1]), "Invalid policy verb; expected inspect, read, use, manage, or associate");
 });
 
 test("handles CRLF after a logical condition before the next statement", () => {
@@ -81,7 +92,7 @@ test("does not merge a malformed logical condition with its following statement"
   ].join("\r\n");
   const spans = splitStatements(source);
   assert.equal(spans.length, 2);
-  assert.equal(statementError(spans[0]), "empty logical condition member");
+  assert.equal(statementError(spans[0]), "Logical condition members cannot be empty");
   assert.equal(statementError(spans[1]), undefined);
 });
 
@@ -100,6 +111,114 @@ test("warns on spaces before the logical condition's newline", () => {
 test("rejects malformed conditions with parser errors", () => {
   assert.throws(() => parsePolicyStatement("allow group admins to read buckets in tenancy where any {}"), PolicySyntaxError);
   assert.throws(() => parsePolicyStatement("allow group admins to read buckets in tenancy where request.x in ('a', unquoted)"), PolicySyntaxError);
+});
+
+test("offers conservative typo replacements for parser-enumerated vocabularies", () => {
+  const cases = [
+    ["allaw group admins to read buckets in tenancy", "allow"],
+    ["allow grop admins to read buckets in tenancy", "group"],
+    ["allow group admins to reed buckets in tenancy", "read"],
+    ["allow group admins to read buckets in compartmnt test", "compartment"],
+    ["allow group admins to associate dns-zons in compartment test with dns-zones in tenancy", "dns-zones"],
+    ["allow group admins to associate dns-zones in compartment test with dns-znes in tenancy", "dns-zones"],
+    ["allow group admins to associate dns-zones in compartment test with dns-zones in tenanc", "tenancy"],
+  ] as const;
+  for (const [source, expected] of cases) {
+    const { fix, result } = quickFix(source);
+    assert.equal(fix.text, expected);
+    assert.doesNotThrow(() => parsePolicyStatement(result));
+  }
+});
+
+test("removes only invalid id modifiers and quotes only diagnosed list members", () => {
+  for (const source of [
+    "allow group id invalid-group to read buckets in tenancy",
+    "allow group admins to read buckets in compartment id invalid-compartment",
+  ]) {
+    const { fix, result } = quickFix(source);
+    assert.equal(fix.title, "Remove 'id'");
+    assert.equal(fix.text, "");
+    assert.doesNotMatch(result, /\bid\b/);
+    assert.doesNotThrow(() => parsePolicyStatement(result));
+  }
+  const source = "allow group admins to read buckets in tenancy where request.operation in ('list', get)";
+  const { fix, result } = quickFix(source);
+  assert.equal(fix.title, "Add single quotes");
+  assert.match(result, /\('list', 'get'\)/);
+  assert.doesNotThrow(() => parsePolicyStatement(result));
+});
+
+test("inserts only explicit missing keywords at the parser insertion point", () => {
+  const cases = [
+    ["allow group admins to read buckets compartment test", "Insert 'in'", "allow group admins to read buckets in compartment test"],
+    ["allow group admins to associate dns-zones in compartment test dns-zones in tenancy", "Insert 'with'", "allow group admins to associate dns-zones in compartment test with dns-zones in tenancy"],
+    ["define group admins ocid1.group.oc1..admins", "Insert 'as'", "define group admins as ocid1.group.oc1..admins"],
+  ] as const;
+  for (const [source, title, expected] of cases) {
+    const { fix, result } = quickFix(source);
+    assert.equal(fix.title, title);
+    assert.equal(result, expected);
+    assert.doesNotThrow(() => parsePolicyStatement(result));
+  }
+});
+
+test("suppresses ambiguous, distant, stale, and unrelated diagnostics", () => {
+  assert.equal(uniqueVocabularyCorrection("red", ["read", "reed"]), undefined, "equally-close vocabulary values are ambiguous");
+  const span = splitStatements("allow group admins to rad buckets in tenancy")[0];
+  const diagnostic = statementDiagnostic(span);
+  assert.ok(diagnostic);
+  assert.equal(statementQuickFix(span, { ...diagnostic, code: undefined }), undefined, "diagnostics without a stable parser code are ignored");
+  const distant = splitStatements("allow group admins to catalog buckets in tenancy")[0];
+  const distantDiagnostic = statementDiagnostic(distant);
+  assert.ok(distantDiagnostic);
+  assert.equal(statementQuickFix(distant, distantDiagnostic), undefined);
+  assert.equal(statementQuickFix(span, { ...diagnostic, message: "unrelated", code: "oci-iam.fix.verb" }), undefined);
+  assert.equal(statementQuickFix(span, { ...diagnostic, offset: diagnostic.offset + 1 }), undefined);
+  const unsafe = splitStatements("allow group id invalid-group extra to read buckets in tenancy")[0];
+  const unsafeDiagnostic = statementDiagnostic(unsafe);
+  assert.ok(unsafeDiagnostic);
+  assert.equal(statementQuickFix(unsafe, unsafeDiagnostic), undefined, "edits that do not reparse are suppressed");
+});
+
+test("reports precise parser ranges for invalid policy constructs", () => {
+  const cases = [
+    ["allow group testgroup to use instances in compartment id testcompartment", "Invalid OCID for a location specified by 'id'", "id testcompartment"],
+    ["allow group testgroup to use instances in compartment testcompartment where request.operation in ('listInstances', getInstance)", "List values must be enclosed in single quotes", "getInstance"],
+    ["allow dynamicgroup testgroup to read instances in tenancy", "Invalid principal type; expected group, dynamic-group, tenancy, service, any-user, or any-group", "dynamicgroup"],
+    ["allow group id not-an-ocid to read buckets in tenancy", "Invalid OCID for a principal specified by 'id'", "id not-an-ocid"],
+  ] as const;
+  for (const [source, message, expected] of cases) {
+    assert.throws(() => parsePolicyStatement(source), (error: unknown) => {
+      assert.ok(error instanceof PolicySyntaxError);
+      assert.equal(error.message, message);
+      assert.equal(source.slice(error.offset, error.offset + error.length), expected);
+      assert.ok(error.offset >= 0 && error.offset + error.length <= source.length);
+      return true;
+    });
+  }
+});
+
+test("keeps parser diagnostic offsets relative to multiline and CRLF statement spans", () => {
+  const source = [
+    "allow group admins to read buckets in tenancy where any {",
+    "  request.operation in ('listInstances', getInstance)",
+    "}",
+  ].join("\r\n");
+  const span = splitStatements(source)[0];
+  const diagnostic = statementDiagnostic(span);
+  assert.ok(diagnostic);
+  assert.equal(span.text.slice(diagnostic.offset, diagnostic.offset + diagnostic.length), "getInstance");
+  assert.equal(source.slice(span.start + diagnostic.offset, span.start + diagnostic.offset + diagnostic.length), "getInstance");
+});
+
+test("selects an invalid nested list member rather than an earlier valid list", () => {
+  const source = "allow group admins to read buckets in tenancy where all { request.operation in ('getInstance'), target.operation in ('getInstance', getInstance) }";
+  assert.throws(() => parsePolicyStatement(source), (error: unknown) => {
+    assert.ok(error instanceof PolicySyntaxError);
+    assert.equal(error.offset, source.lastIndexOf("getInstance"));
+    assert.equal(error.length, "getInstance".length);
+    return true;
+  });
 });
 
 test("matches the Python parser's supported statement forms", () => {
@@ -174,5 +293,10 @@ test("matches the Python parser's rejected statement forms", () => {
     "define service objectstorage as ocid1.service.oc1..objectstorage", "define tenancy Remote as", "define tenancy Remote as invalid",
     "define tenancy Remote as ocid1.tenancy.oc1..one ocid1.tenancy.oc1..two", "define tenancy one,two as ocid1.tenancy.oc1..remote"
   ];
-  for (const source of invalid) assert.throws(() => parsePolicyStatement(source), PolicySyntaxError, source);
+  for (const source of invalid) assert.throws(() => parsePolicyStatement(source), (error: unknown) => {
+    assert.ok(error instanceof PolicySyntaxError, source);
+    assert.ok(Number.isInteger(error.offset) && Number.isInteger(error.length), source);
+    assert.ok(error.offset >= 0 && error.offset + error.length <= source.length, source);
+    return true;
+  });
 });
