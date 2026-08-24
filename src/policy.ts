@@ -600,6 +600,13 @@ function location(s: Span, type: StatementType, association = false): [
     if (byId && !ocid(T(value))) {
         fail("Invalid OCID for a location specified by 'id'", P(rest, rest.start, value.end));
     }
+    if (!byId && !/^[A-Za-z0-9._:-]+$/.test(T(value))) {
+        fail("Invalid location - compartment names can only be letters, numbers, periods, hyphens, and underscores", value);
+    }
+    if (!byId && /(^:|:$|::)/.test(T(value))) {
+        fail("Invalid compartment path.", value);
+    }
+
     return [{ type: "compartment", value: T(value).toLowerCase(), reference: byId ? "id" : "literal" }, tail];
 }
 

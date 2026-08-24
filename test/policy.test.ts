@@ -17,10 +17,10 @@ function quickFix(source: string) {
 test("parses and canonicalizes supported statement shapes", () => {
   const cases = [
     ["ALLOW group Admins to READ buckets in tenancy", "allow group 'Admins' to read buckets in tenancy"],
-    ["allow dynamic-group id ocid1.dynamicgroup.oc1..workers to {object_read, object_write} in tenancy where request.name = 'Value'", "allow dynamic-group id ocid1.dynamicgroup.oc1..workers to {OBJECT_READ, OBJECT_WRITE} in tenancy where request.name = 'Value'"],
-    ["deny service objectstorage to use keys in tenancy where request.key = /Prod\\/Key/", "deny service objectstorage to use keys in tenancy where request.key = /Prod\\/Key/"],
-    ["endorse group admins to read buckets in tenancy remote where request.user = target.user", "endorse group 'admins' to read buckets in tenancy remote where request.user = target.user"],
-    ["admit any-user to manage all-resources in tenancy where request.operation in ('Create', 'Delete')", "admit any-user to manage all-resources in tenancy where request.operation in ( 'Create', 'Delete' )"],
+    ["allow dynamic-group id ocid1.dynamicgroup.oc1..aaaaaa to {object_read, object_write} in tenancy where request.principal.name = 'Value'", "allow dynamic-group id ocid1.dynamicgroup.oc1..aaaaaa to {OBJECT_READ, OBJECT_WRITE} in tenancy where request.principal.name = 'Value'"],
+    ["deny service objectstorage to use keys in tenancy where request.target.key = /Prod\\/Key/", "deny service objectstorage to use keys in tenancy where request.target.key = /Prod\\/Key/"],
+    ["endorse group admins to read buckets in tenancy remote where request.bucket.name = request.principal.user", "endorse group 'admins' to read buckets in tenancy remote where request.bucket.name = request.principal.user"],
+    ["admit any-user to manage all-resources in tenancy where request.operation in ('CreateObject', 'DeleteObject')", "admit any-user to manage all-resources in tenancy where request.operation in ( 'CreateObject', 'DeleteObject' )"],
     ["define group admins as ocid1.group.oc1..admins", "define group 'admins' as ocid1.group.oc1..admins"],
     ["allow group admins to associate local-peering-gateways in tenancy with local-peering-gateways in tenancy remote", "allow group 'admins' to associate local-peering-gateways in tenancy with local-peering-gateways in tenancy remote"]
   ] as const;
@@ -193,6 +193,28 @@ test("reports precise parser ranges for invalid policy constructs", () => {
       assert.equal(error.message, message);
       assert.equal(source.slice(error.offset, error.offset + error.length), expected);
       assert.ok(error.offset >= 0 && error.offset + error.length <= source.length);
+      return true;
+    });
+  }
+});
+
+test("validates literal compartment location names and paths", () => {
+  const base = "allow group admins to read buckets in compartment ";
+  for (const value of ["finance:accounts", "Finance_1.2-archive"]) {
+    assert.doesNotThrow(() => parsePolicyStatement(base + value));
+  }
+  const cases = [
+    ["finance/accounts", "Invalid location - compartment names can only be letters, numbers, periods, hyphens, and underscores"],
+    [":finance", "Invalid compartment path."],
+    ["finance:", "Invalid compartment path."],
+    ["finance::accounts", "Invalid compartment path."],
+  ] as const;
+  for (const [value, message] of cases) {
+    assert.throws(() => parsePolicyStatement(base + value), (error: unknown) => {
+      assert.ok(error instanceof PolicySyntaxError);
+      assert.equal(error.message, message);
+      assert.equal(error.offset, base.length);
+      assert.equal(error.length, value.length);
       return true;
     });
   }
