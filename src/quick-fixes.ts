@@ -36,7 +36,7 @@ export function uniqueVocabularyCorrection(value: string, candidates: readonly s
   const normalized = value.toLowerCase();
   const ranked = candidates.map((candidate) => ({ candidate, distance: distance(normalized, candidate) })).sort((a, b) => a.distance - b.distance);
   const closest = ranked[0];
-  if (!closest || closest.distance > Math.max(1, Math.floor(closest.candidate.length / 4)) || ranked[1]?.distance === closest.distance) return undefined;
+  if (!closest || closest.distance > Math.max(2, Math.floor(closest.candidate.length / 3)) || ranked[1]?.distance === closest.distance) return undefined;
   return closest.candidate;
 }
 

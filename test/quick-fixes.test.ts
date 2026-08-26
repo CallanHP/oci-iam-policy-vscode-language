@@ -18,6 +18,7 @@ test("offers conservative typo replacements for parser-enumerated vocabularies",
   const cases = [
     ["allaw group admins to read buckets in tenancy", "allow"],
     ["allow grop admins to read buckets in tenancy", "group"],
+    ["allow gruop admins to read buckets in tenancy", "group"],
     ["allow group admins to reed buckets in tenancy", "read"],
     ["allow group admins to read buckets in compartmnt test", "compartment"],
     ["allow group admins to associate dns-zons in compartment test with dns-zones in tenancy", "dns-zones"],
