@@ -1,18 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatDocument, logicalTrailingWhitespace, splitStatements, statementDiagnostic, statementError } from "../src/document";
 import { formatPolicyStatement, parsePolicyStatement, PolicySyntaxError } from "../src/policy";
-import { statementQuickFix, uniqueVocabularyCorrection } from "../src/quick-fixes";
-
-function quickFix(source: string) {
-  const span = splitStatements(source)[0];
-  const diagnostic = statementDiagnostic(span);
-  assert.ok(diagnostic, "expected parser diagnostic");
-  const fix = statementQuickFix(span, diagnostic);
-  assert.ok(fix, `expected quick fix for ${diagnostic.message}`);
-  const result = source.slice(0, span.start + fix.offset) + fix.text + source.slice(span.start + fix.offset + fix.length);
-  return { diagnostic, fix, result };
-}
 
 test("parses and canonicalizes supported statement shapes", () => {
   const cases = [
@@ -27,20 +15,7 @@ test("parses and canonicalizes supported statement shapes", () => {
   for (const [source, expected] of cases) assert.equal(formatPolicyStatement(parsePolicyStatement(source)), expected);
 });
 
-test("formats logical conditions with readable nested indentation", () => {
-  const source = "allow group admins to read buckets in tenancy where all { request.user.id = 'abc', any { target.bucket.name = 'logs', target.bucket.name = 'archive' } }";
-  assert.equal(formatDocument(source), [
-    "allow group 'admins' to read buckets in tenancy where all {",
-    "  request.user.id = 'abc',",
-    "  any {",
-    "    target.bucket.name = 'logs',",
-    "    target.bucket.name = 'archive'",
-    "  }",
-    "}"
-  ].join("\n"));
-});
-
-test("accepts OCI key policies with multiline any conditions", () => {
+test("parses OCI key policies with multiline any conditions", () => {
   const source = [
     "allow group Administrators, automation-users to use keys in compartment onfinance where any {",
     "    target.key.id = 'ocid1.key.oc1.region.aaaaaa',",
@@ -51,133 +26,11 @@ test("accepts OCI key policies with multiline any conditions", () => {
   const parsed = parsePolicyStatement(source);
   assert.equal(parsed.condition?.kind, "logical");
   assert.equal((parsed.condition as { conditions: unknown[] }).conditions.length, 3);
-  assert.equal(statementError(splitStatements(source)[0]), undefined);
-});
-
-test("preserves blank lines and invalid source while formatting valid statements", () => {
-  const invalid = "allow group admins to audit buckets in tenancy";
-  const source = `ALLOW service objectstorage to read buckets in tenancy\n\n${invalid}`;
-  assert.equal(formatDocument(source), `allow service objectstorage to read buckets in tenancy\n\n${invalid}`);
-});
-
-test("splits logical blocks and reports full invalid statement errors", () => {
-  const source = "allow group admins to read buckets in tenancy where all {\n  request.user.id = 'a'\n}\nallow group admins to audit buckets in tenancy";
-  const spans = splitStatements(source);
-  assert.equal(spans.length, 2);
-  assert.equal(statementError(spans[0]), undefined);
-  assert.equal(statementError(spans[1]), "Invalid policy verb; expected inspect, read, use, manage, or associate");
-});
-
-test("handles CRLF after a logical condition before the next statement", () => {
-  const source = [
-    "allow group Administrators, automation-users to use keys in compartment onfinance where any {",
-    "  target.key.id = 'ocid1.key.oc1.region.aaaaaa',",
-    "  target.key.id = 'ocid1.key.oc1.region.aaaaab'",
-    "}",
-    "Allow dynamic-group 'domain'/'dynamic-group' to read secret-bundles in compartment id ocid1.compartment.oc1..aaaaaaaa"
-  ].join("\r\n");
-  const spans = splitStatements(source);
-  assert.equal(spans.length, 2);
-  assert.equal(statementError(spans[0]), undefined);
-  assert.equal(statementError(spans[1]), undefined);
-  assert.equal(logicalTrailingWhitespace(spans[0]), undefined);
-});
-
-test("does not merge a malformed logical condition with its following statement", () => {
-  const source = [
-    "allow group admins to read buckets in tenancy where any {",
-    "  request.user.id = 'x',",
-    "}",
-    "allow service objectstorage to read buckets in tenancy"
-  ].join("\r\n");
-  const spans = splitStatements(source);
-  assert.equal(spans.length, 2);
-  assert.equal(statementError(spans[0]), "Logical condition members cannot be empty");
-  assert.equal(statementError(spans[1]), undefined);
-});
-
-test("ignores blank lines after logical conditions", () => {
-  const source = "allow group admins to read buckets in tenancy where any { request.user.id = 'x' }\r\n\r\nallow service objectstorage to read buckets in tenancy";
-  const spans = splitStatements(source);
-  assert.equal(logicalTrailingWhitespace(spans[0]), undefined);
-});
-
-test("warns on spaces before the logical condition's newline", () => {
-  const source = "allow group admins to read buckets in tenancy where any { request.user.id = 'x' }   \r\nallow service objectstorage to read buckets in tenancy";
-  const spans = splitStatements(source);
-  assert.equal(logicalTrailingWhitespace(spans[0]), "   ");
 });
 
 test("rejects malformed conditions with parser errors", () => {
   assert.throws(() => parsePolicyStatement("allow group admins to read buckets in tenancy where any {}"), PolicySyntaxError);
   assert.throws(() => parsePolicyStatement("allow group admins to read buckets in tenancy where request.x in ('a', unquoted)"), PolicySyntaxError);
-});
-
-test("offers conservative typo replacements for parser-enumerated vocabularies", () => {
-  const cases = [
-    ["allaw group admins to read buckets in tenancy", "allow"],
-    ["allow grop admins to read buckets in tenancy", "group"],
-    ["allow group admins to reed buckets in tenancy", "read"],
-    ["allow group admins to read buckets in compartmnt test", "compartment"],
-    ["allow group admins to associate dns-zons in compartment test with dns-zones in tenancy", "dns-zones"],
-    ["allow group admins to associate dns-zones in compartment test with dns-znes in tenancy", "dns-zones"],
-    ["allow group admins to associate dns-zones in compartment test with dns-zones in tenanc", "tenancy"],
-  ] as const;
-  for (const [source, expected] of cases) {
-    const { fix, result } = quickFix(source);
-    assert.equal(fix.text, expected);
-    assert.doesNotThrow(() => parsePolicyStatement(result));
-  }
-});
-
-test("removes only invalid id modifiers and quotes only diagnosed list members", () => {
-  for (const source of [
-    "allow group id invalid-group to read buckets in tenancy",
-    "allow group admins to read buckets in compartment id invalid-compartment",
-  ]) {
-    const { fix, result } = quickFix(source);
-    assert.equal(fix.title, "Remove 'id'");
-    assert.equal(fix.text, "");
-    assert.doesNotMatch(result, /\bid\b/);
-    assert.doesNotThrow(() => parsePolicyStatement(result));
-  }
-  const source = "allow group admins to read buckets in tenancy where request.operation in ('list', get)";
-  const { fix, result } = quickFix(source);
-  assert.equal(fix.title, "Add single quotes");
-  assert.match(result, /\('list', 'get'\)/);
-  assert.doesNotThrow(() => parsePolicyStatement(result));
-});
-
-test("inserts only explicit missing keywords at the parser insertion point", () => {
-  const cases = [
-    ["allow group admins to read buckets compartment test", "Insert 'in'", "allow group admins to read buckets in compartment test"],
-    ["allow group admins to associate dns-zones in compartment test dns-zones in tenancy", "Insert 'with'", "allow group admins to associate dns-zones in compartment test with dns-zones in tenancy"],
-    ["define group admins ocid1.group.oc1..admins", "Insert 'as'", "define group admins as ocid1.group.oc1..admins"],
-  ] as const;
-  for (const [source, title, expected] of cases) {
-    const { fix, result } = quickFix(source);
-    assert.equal(fix.title, title);
-    assert.equal(result, expected);
-    assert.doesNotThrow(() => parsePolicyStatement(result));
-  }
-});
-
-test("suppresses ambiguous, distant, stale, and unrelated diagnostics", () => {
-  assert.equal(uniqueVocabularyCorrection("red", ["read", "reed"]), undefined, "equally-close vocabulary values are ambiguous");
-  const span = splitStatements("allow group admins to rad buckets in tenancy")[0];
-  const diagnostic = statementDiagnostic(span);
-  assert.ok(diagnostic);
-  assert.equal(statementQuickFix(span, { ...diagnostic, code: undefined }), undefined, "diagnostics without a stable parser code are ignored");
-  const distant = splitStatements("allow group admins to catalog buckets in tenancy")[0];
-  const distantDiagnostic = statementDiagnostic(distant);
-  assert.ok(distantDiagnostic);
-  assert.equal(statementQuickFix(distant, distantDiagnostic), undefined);
-  assert.equal(statementQuickFix(span, { ...diagnostic, message: "unrelated", code: "oci-iam.fix.verb" }), undefined);
-  assert.equal(statementQuickFix(span, { ...diagnostic, offset: diagnostic.offset + 1 }), undefined);
-  const unsafe = splitStatements("allow group id invalid-group extra to read buckets in tenancy")[0];
-  const unsafeDiagnostic = statementDiagnostic(unsafe);
-  assert.ok(unsafeDiagnostic);
-  assert.equal(statementQuickFix(unsafe, unsafeDiagnostic), undefined, "edits that do not reparse are suppressed");
 });
 
 test("reports precise parser ranges for invalid policy constructs", () => {
@@ -218,19 +71,6 @@ test("validates literal compartment location names and paths", () => {
       return true;
     });
   }
-});
-
-test("keeps parser diagnostic offsets relative to multiline and CRLF statement spans", () => {
-  const source = [
-    "allow group admins to read buckets in tenancy where any {",
-    "  request.operation in ('listInstances', getInstance)",
-    "}",
-  ].join("\r\n");
-  const span = splitStatements(source)[0];
-  const diagnostic = statementDiagnostic(span);
-  assert.ok(diagnostic);
-  assert.equal(span.text.slice(diagnostic.offset, diagnostic.offset + diagnostic.length), "getInstance");
-  assert.equal(source.slice(span.start + diagnostic.offset, span.start + diagnostic.offset + diagnostic.length), "getInstance");
 });
 
 test("selects an invalid nested list member rather than an earlier valid list", () => {

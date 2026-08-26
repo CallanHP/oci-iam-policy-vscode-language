@@ -1,6 +1,7 @@
 {
   "scopeName": "source.oci-iam-policy",
   "patterns": [
+    { "include": "#comment" },
     { "include": "#string" },
     { "include": "#regex" },
     { "include": "#ocid" },
@@ -11,6 +12,12 @@
     { "include": "#identifier" }
   ],
   "repository": {
+    "comment": {
+      "patterns": [
+        { "match": "^\\s*(?:#|//).*$", "name": "comment.line.oci-iam-policy" },
+        { "name": "comment.block.oci-iam-policy", "begin": "^\\s*/\\*", "end": "\\*/" }
+      ]
+    },
     "string": { "name": "string.quoted.single.oci-iam-policy", "begin": "'", "end": "'", "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.oci-iam-policy" }] },
     "regex": { "name": "string.regexp.oci-iam-policy", "begin": "(?<!\\S)/(?=\\S)", "end": "/", "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.oci-iam-policy" }] },
     "ocid": { "match": "\\bocid1\\.[A-Za-z0-9._-]+\\b", "name": "constant.other.ocid.oci-iam-policy" },

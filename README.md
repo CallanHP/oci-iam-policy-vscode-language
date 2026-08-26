@@ -8,7 +8,7 @@ Open a policy file and select **OCI IAM Policy** from VS Code's language mode pi
 
 Use **Format Document** to canonicalize statements. Ordinary statements and simple `where` conditions are one line. Logical `where any { ... }` and `where all { ... }` groups are formatted across lines with two-space indentation. Invalid statements receive an error diagnostic and are not changed by the formatter.
 
-Comments are not supported because OCI IAM policy statements do not include comment syntax. A document contains one statement per nonblank line, except a logical condition block, which can span lines.
+Documents accept standalone comments between statements: `# ...`, `// ...`, and `/* ... */` (including multi-line blocks). Comments may be indented and are preserved by formatting, but cannot trail a policy statement or appear inside a multiline logical condition. A document otherwise contains one statement per nonblank line, except a logical condition block, which can span lines.
 
 ## Development
 

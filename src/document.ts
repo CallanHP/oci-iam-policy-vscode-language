@@ -41,6 +41,19 @@ function documentLines(text: string): DocumentLine[] {
   return lines;
 }
 
+/** Return the last line of a standalone block comment, or the document end if it is unterminated. */
+function standaloneBlockCommentEnd(lines: DocumentLine[], line: number): number | undefined {
+  const first = lines[line].text.trimStart();
+  if (!first.startsWith("/*")) return undefined;
+  for (let index = line; index < lines.length; index += 1) {
+    const from = index === line ? lines[index].text.indexOf("/*") + 2 : 0;
+    const close = lines[index].text.indexOf("*/", from);
+    if (close < 0) continue;
+    return lines[index].text.slice(close + 2).trim() ? undefined : index;
+  }
+  return lines.length - 1;
+}
+
 /** Split policy documents according to the documented one-line-or-logical-block format. */
 export function splitStatements(text: string): StatementSpan[] {
   const lines = documentLines(text);
@@ -48,7 +61,13 @@ export function splitStatements(text: string): StatementSpan[] {
   const flush = (end: number): void => { if (start === undefined) return; const source = text.slice(lines[start].start, end); if (source.trim()) spans.push({ start: lines[start].start, end, text: source }); start = undefined; depth = 0; quote = false; regex = false; escaped = false; };
   for (let line = 0; line < lines.length; line += 1) {
     const current = lines[line];
-    const trimmed = current.text.trim(); if (start === undefined) { if (!trimmed) continue; start = line; }
+    const trimmed = current.text.trim();
+    if (start === undefined) {
+      if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//")) continue;
+      const blockEnd = standaloneBlockCommentEnd(lines, line);
+      if (blockEnd !== undefined) { line = blockEnd; continue; }
+      start = line;
+    }
     for (let column = 0; column < current.text.length; column += 1) {
       const c = current.text[column];
       if (escaped) { escaped = false; continue; }
