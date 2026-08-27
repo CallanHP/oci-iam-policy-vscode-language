@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatDocument, logicalTrailingWhitespace, splitStatements, statementDiagnostic, statementError } from "../src/document";
+import { formatDocument, logicalTrailingWhitespace, splitStatements, statementDiagnostic, statementDiagnostics, statementError } from "../src/document";
 
 test("formats logical conditions with readable nested indentation", () => {
   const source = "allow group admins to read buckets in tenancy where all { request.user.id = 'abc', any { target.bucket.name = 'logs', target.bucket.name = 'archive' } }";
@@ -107,14 +107,22 @@ test("ignores blank lines after logical conditions", () => {
 });
 
 test("warns on spaces before the logical condition's newline", () => {
-  const source = "allow group admins to read buckets in tenancy where any { request.user.id = 'x' }   \r\nallow service objectstorage to read buckets in tenancy";
+  const source = "allow group 'Default'/'admins' to read buckets in tenancy where any { request.user.id = 'x' }   \r\nallow service objectstorage to read buckets in tenancy";
   const spans = splitStatements(source);
   assert.equal(logicalTrailingWhitespace(spans[0]), "   ");
+  assert.deepEqual(statementDiagnostics(spans[0]), [{
+    severity: "warning",
+    message: "logical condition has trailing whitespace before its line ending",
+    offset: spans[0].text.length - 3,
+    length: 3,
+    code: undefined,
+  }]);
+  assert.equal(formatDocument(source), "allow group 'Default'/'admins' to read buckets in tenancy where any {\n  request.user.id = 'x'\n}\r\nallow service objectstorage to read buckets in tenancy");
 });
 
 test("keeps parser diagnostic offsets relative to multiline and CRLF statement spans", () => {
   const source = [
-    "allow group admins to read buckets in tenancy where any {",
+    "allow group 'Default'/'admins' to read buckets in tenancy where any {",
     "  request.operation in ('listInstances', getInstance)",
     "}",
   ].join("\r\n");

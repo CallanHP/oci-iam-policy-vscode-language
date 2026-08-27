@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { splitStatements, statementDiagnostic } from "../src/document";
+import { splitStatements, statementDiagnostic, statementDiagnostics } from "../src/document";
 import { parsePolicyStatement } from "../src/policy";
 import { statementQuickFix, uniqueVocabularyCorrection } from "../src/quick-fixes";
 
@@ -13,6 +13,8 @@ function quickFix(source: string) {
   const result = source.slice(0, span.start + fix.offset) + fix.text + source.slice(span.start + fix.offset + fix.length);
   return { diagnostic, fix, result };
 }
+
+function assertValid(source: string): void { assert.ok(parsePolicyStatement(source).statement, source); }
 
 test("offers conservative typo replacements for parser-enumerated vocabularies", () => {
   const cases = [
@@ -28,7 +30,7 @@ test("offers conservative typo replacements for parser-enumerated vocabularies",
   for (const [source, expected] of cases) {
     const { fix, result } = quickFix(source);
     assert.equal(fix.text, expected);
-    assert.doesNotThrow(() => parsePolicyStatement(result));
+    assertValid(result);
   }
 });
 
@@ -41,13 +43,32 @@ test("removes only invalid id modifiers and quotes only diagnosed list members",
     assert.equal(fix.title, "Remove 'id'");
     assert.equal(fix.text, "");
     assert.doesNotMatch(result, /\bid\b/);
-    assert.doesNotThrow(() => parsePolicyStatement(result));
+    assertValid(result);
   }
-  const source = "allow group admins to read buckets in tenancy where request.operation in ('list', get)";
+  const source = "allow group 'Default'/'admins' to read buckets in tenancy where request.operation in ('list', get)";
   const { fix, result } = quickFix(source);
   assert.equal(fix.title, "Add single quotes");
   assert.match(result, /\('list', 'get'\)/);
-  assert.doesNotThrow(() => parsePolicyStatement(result));
+  assertValid(result);
+});
+
+test("offers quick fixes for poor-practice warnings", () => {
+  const cases = [
+    ["allow group admins to read buckets in tenancy", "oci-iam.fix.add-default-domain", "allow group 'Default'/'admins' to read buckets in tenancy"],
+    ["allow group admins to read buckets in tenancy", "oci-iam.fix.quote-principal", "allow group 'admins' to read buckets in tenancy"],
+    ["allow group 'domain/admins' to read buckets in tenancy", "oci-iam.fix.split-quoted-principal", "allow group 'domain'/'admins' to read buckets in tenancy"],
+    ["allow group 'Default'/'admins' to read buckets in tenancy where request.operation = get", "oci-iam.fix.quote-comparison-value", "allow group 'Default'/'admins' to read buckets in tenancy where request.operation = 'get'"],
+  ] as const;
+  for (const [source, code, expected] of cases) {
+    const span = splitStatements(source)[0];
+    const diagnostic = statementDiagnostics(span).find((item) => item.code === code);
+    assert.ok(diagnostic, code);
+    const fix = statementQuickFix(span, diagnostic);
+    assert.ok(fix, code);
+    const result = source.slice(0, fix.offset) + fix.text + source.slice(fix.offset + fix.length);
+    assert.equal(result, expected);
+    assertValid(result);
+  }
 });
 
 test("inserts only explicit missing keywords at the parser insertion point", () => {
@@ -60,7 +81,7 @@ test("inserts only explicit missing keywords at the parser insertion point", () 
     const { fix, result } = quickFix(source);
     assert.equal(fix.title, title);
     assert.equal(result, expected);
-    assert.doesNotThrow(() => parsePolicyStatement(result));
+    assertValid(result);
   }
 });
 

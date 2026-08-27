@@ -1,8 +1,14 @@
 import * as vscode from "vscode";
-import { formatDocument, logicalTrailingWhitespace, splitStatements, statementDiagnostic } from "./document";
+import { formatDocument, splitStatements, statementDiagnostics } from "./document";
 import { statementQuickFix } from "./quick-fixes";
 
 const languageId = "oci-iam-policy";
+const severity: Record<"error" | "warning" | "information" | "hint", vscode.DiagnosticSeverity> = {
+  error: vscode.DiagnosticSeverity.Error,
+  warning: vscode.DiagnosticSeverity.Warning,
+  information: vscode.DiagnosticSeverity.Information,
+  hint: vscode.DiagnosticSeverity.Hint,
+};
 
 function updateDiagnostics(document: vscode.TextDocument, collection: vscode.DiagnosticCollection): void {
   if (document.languageId !== languageId) return;
@@ -11,22 +17,13 @@ function updateDiagnostics(document: vscode.TextDocument, collection: vscode.Dia
   const spans = splitStatements(source);
   for (let index = 0; index < spans.length; index += 1) {
     const span = spans[index];
-    const diagnostic = statementDiagnostic(span);
-    if (diagnostic) {
+    for (const diagnostic of statementDiagnostics(span)) {
       const start = span.start + diagnostic.offset;
       const end = start + diagnostic.length;
       const range = new vscode.Range(document.positionAt(start), document.positionAt(end));
-      const vscodeDiagnostic = new vscode.Diagnostic(range, diagnostic.message, vscode.DiagnosticSeverity.Error);
+      const vscodeDiagnostic = new vscode.Diagnostic(range, diagnostic.message, severity[diagnostic.severity]);
       vscodeDiagnostic.code = diagnostic.code;
       diagnostics.push(vscodeDiagnostic);
-    }
-    const trailingWhitespace = logicalTrailingWhitespace(span);
-    if (trailingWhitespace) {
-      diagnostics.push(new vscode.Diagnostic(
-        new vscode.Range(document.positionAt(span.end - trailingWhitespace.length), document.positionAt(span.end)),
-        "logical condition has trailing whitespace before its line ending",
-        vscode.DiagnosticSeverity.Warning,
-      ));
     }
   }
   collection.set(document.uri, diagnostics);
@@ -47,8 +44,8 @@ export function activate(context: vscode.ExtensionContext): void {
         const spans = splitStatements(document.getText());
         const span = spans.find((item) => offset >= item.start && offset <= item.end);
         if (!span) continue;
-        const parserDiagnostic = statementDiagnostic(span);
-        if (!parserDiagnostic || parserDiagnostic.code !== diagnostic.code || parserDiagnostic.message !== diagnostic.message) continue;
+        const parserDiagnostic = statementDiagnostics(span).find((item) => item.code === diagnostic.code && item.message === diagnostic.message);
+        if (!parserDiagnostic) continue;
         const start = span.start + parserDiagnostic.offset;
         const end = start + parserDiagnostic.length;
         if (document.offsetAt(diagnostic.range.start) !== start || document.offsetAt(diagnostic.range.end) !== end) continue;

@@ -86,6 +86,23 @@ export interface PolicyStatement {
     condition?: Condition;
 }
 
+export interface PolicyDiagnostic {
+    severity: "error" | "warning" | "information" | "hint";
+    message: string;
+    offset: number;
+    length: number;
+}
+
+export interface PolicyParseResult {
+    statement?: PolicyStatement;
+    diagnostics: PolicyDiagnostic[];
+}
+
+export interface ConditionParseResult {
+    condition?: Condition;
+    diagnostics: PolicyDiagnostic[];
+}
+
 const statementTypes = new Set<StatementType>(["allow", "deny", "endorse", "admit", "define"]);
 const principalTypes = new Set<PrincipalType>(["group", "dynamic-group", "tenancy", "service", "any-user", "any-group"]);
 const verbs = new Set<Verb>(["inspect", "read", "use", "manage", "associate"]);
@@ -120,17 +137,94 @@ function trim(s: Span): Span {
     return P(s, start, end);
 }
 
+const failures = {
+    expectedAdditionalSyntax: "Expected additional policy syntax",
+    expectedPrincipalType: "Expected a principal type",
+    unterminatedQuotedValue: "Unterminated quoted value; add a closing single quote",
+    unexpectedTextAfterQuotedValue: "Unexpected text after quoted value",
+    emptyConditionValue: "Condition values cannot be empty",
+    emptyListItem: "List items cannot be empty",
+    emptyLogicalConditionMember: "Logical condition members cannot be empty",
+    unterminatedLogicalCondition: "Unterminated logical condition; add a closing '}'",
+    unexpectedTextAfterLogicalCondition: "Unexpected text after logical condition",
+    emptyLogicalCondition: "Logical conditions must contain at least one condition",
+    invalidConditionOperator: "Invalid condition operator; expected =, !=, or in",
+    expectedConditionVariable: "Expected a condition variable before the operator",
+    listConditionNeedsParentheses: "List conditions must use parentheses after 'in'",
+    unterminatedRegularExpression: "Unterminated regular expression; add a closing '/'",
+    unexpectedTextAfterRegularExpression: "Unexpected text after regular expression",
+    invalidConditionValue: "Condition value must be a variable name, quoted string, regular expression, or quoted list",
+    expectedActionAfterPrincipal: "Expected a policy action after the principal",
+    invalidGroupPrincipalName: "Group and dynamic-group names must be a quoted name or quoted domain/name pair",
+    invalidPrincipalIdentifier: "Principal identifiers must be a name, quoted name, or comma-separated list",
+    invalidPrincipalOcid: "Invalid OCID for a principal specified by 'id'",
+    invalidPrincipalType: "Invalid principal type; expected group, dynamic-group, tenancy, service, any-user, or any-group",
+    idModifierForAnyPrincipal: "The 'id' modifier cannot be used with any-user or any-group",
+    invalidCrossTenancyPrincipal: "Cross-tenancy principals are only valid for group or dynamic-group in an admit statement, without 'id' or multiple identifiers",
+    namedAnyPrincipal: "any-user and any-group cannot have a principal name",
+    invalidPrincipalIdModifier: "The 'id' modifier is only valid for group and dynamic-group principals",
+    expectedPrincipalIdentifier: "Expected a principal identifier",
+    invalidTenancyPrincipal: "A tenancy principal is only valid in a define statement and must have one identifier",
+    invalidPermissionList: "Permission lists are only valid in allow, endorse, or admit statements",
+    expectedPermissionList: "Expected a permission list enclosed in braces",
+    unterminatedPermissionList: "Unterminated permission list; add a closing '}'",
+    invalidPermissionListContents: "Permission lists contain comma-separated unquoted permission names only",
+    invalidPermission: "Invalid permission; permission names cannot contain whitespace or braces",
+    expectedLocation: "Expected a location beginning with 'in'",
+    expectedLocationAfterIn: "Expected a location after 'in'",
+    invalidAnyTenancyLocation: "any-tenancy is only valid in an endorse statement",
+    expectedTenancyName: "Expected a tenancy name",
+    invalidLocationType: "Invalid location type; expected compartment or tenancy",
+    expectedCompartmentName: "Expected a compartment name or OCID after 'compartment'",
+    invalidLocationOcid: "Invalid OCID for a location specified by 'id'",
+    invalidCompartmentName: "Invalid location - compartment names can only be letters, numbers, periods, hyphens, and underscores",
+    invalidCompartmentPath: "Invalid compartment path.",
+    expectedAssociation: "Expected an association after 'with'",
+    expectedAssociatedResource: "Expected an associated resource after 'with'",
+    invalidAssociatedResource: "Invalid associated resource; expected local-peering-gateways, dns-zones, dns-views, dns-resolver, or dns-records",
+    expectedAssociationLocation: "Expected an association location beginning with 'in'",
+    expectedAssociationLocationAfterIn: "Expected an association location after 'in'",
+    expectedAssociationLocationValue: "Expected a value for the association location",
+    invalidAssociationLocation: "Invalid association location; expected compartment, tenancy, or any-tenancy",
+    emptyPolicyStatement: "Policy statement is empty",
+    invalidStatementType: "Invalid policy statement type; expected allow, deny, endorse, admit, or define",
+    invalidDefinePrincipal: "define statements support only tenancy, group, or dynamic-group principals",
+    expectedDefineAs: "Expected 'as' before the define OCID",
+    expectedDefineOcid: "Expected one OCID after 'as' in a define statement",
+    invalidDefineOcid: "Invalid OCID in define statement",
+    invalidPolicyVerb: "Invalid policy verb; expected inspect, read, use, manage, or associate",
+    expectedPolicyVerb: "Expected a policy verb",
+    expectedPolicyResource: "Expected a resource after the policy verb",
+    invalidAssociateResource: "Invalid resource for associate; expected local-peering-gateways, dns-zones, dns-views, dns-resolver, or dns-records",
+    mismatchedAssociatedResource: "The associated resource must match the resource being associated",
+    unexpectedTextAfterStatement: "Unexpected text after the policy statement",
+    expectedCondition: "Expected a condition after 'where'",
+} as const;
+
 /** Throw a syntax error covering the specified source span. */
 function fail(message: string, s: Span, length = s.end - s.start): never {
     const offset = Math.min(Math.max(s.start, 0), s.source.length);
     throw new PolicySyntaxError(message, offset, Math.min(Math.max(length, 0), s.source.length - offset));
 }
 
+const warnings = {
+    defaultIdentityDomain: "Group and dynamic-group names without an identity domain are assumed to be part of the Default identity domain. It is recommended to specify this explicitly.",
+    quotePrincipal: "Group and dynamic-group names should be enclosed in single quotes",
+    quotedSlashPrincipal: "A quoted group or dynamic-group name is treated as a literal group name in the Default identity domain. Did you mean to specify a domain/group pairing?",
+    quoteListMember: "List values should be enclosed in single quotes",
+    quoteComparisonValue: "Unquoted condition values are treated as variables; enclose literal values for comparison in single quotes",
+} as const;
+
+/** Create a Warning Diagnostic from a message */
+const warning = (message: string, s: Span): PolicyDiagnostic => ({ severity: "warning", message, offset: s.start, length: s.end - s.start });
+
+
+
 /** Consume the next whitespace-delimited token and return it with the remainder. */
-function take(s: Span, missing = "Expected additional policy syntax"): [Span, Span] {
+function take(s: Span, failure_message: string = failures.expectedAdditionalSyntax): [Span, Span] {
     s = trim(s);
     if (s.start === s.end) {
-        fail(missing, s, 0);
+        fail(failure_message, s, 0);
     }
     let end = s.start;
     while (end < s.end && !/\s/.test(s.source[end]))
@@ -165,14 +259,14 @@ function close(s: Span, delimiter: string): number {
 }
 
 /** Decode escaped characters from the contents of a quoted value. */
-function decode(s: Span, message = "Unterminated quoted value; add a closing single quote"): string {
+function decode(s: Span, failure_message: string = failures.unterminatedQuotedValue): string {
     let result = "";
     for (let i = s.start; i < s.end; i++) {
         if (s.source[i] !== "\\") {
             result += s.source[i];
         } else {
             if (++i >= s.end) {
-                fail(message, P(s, s.start - 1));
+                fail(failure_message, P(s, s.start - 1));
             }
             result += s.source[i];
         }
@@ -187,20 +281,20 @@ function quote(s: Span): string | undefined {
     }
     const end = close(s, "'");
     if (end < 0) {
-        fail("Unterminated quoted value; add a closing single quote", s);
+        fail(failures.unterminatedQuotedValue, s);
     }
     if (trim(P(s, end + 1)).start !== s.end) {
-        fail("Unexpected text after quoted value", P(s, end + 1));
+        fail(failures.unexpectedTextAfterQuotedValue, P(s, end + 1));
     }
     const value = decode(P(s, s.start + 1, end));
     if (!value) {
-        fail("Condition values cannot be empty", s);
+        fail(failures.emptyConditionValue, s);
     }
     return value;
 }
 
 /** Split a comma-separated list while respecting quoted values and escapes. */
-function list(s: Span, empty = "List items cannot be empty"): Span[] {
+function list(s: Span, empty: string = failures.emptyListItem): Span[] {
     const result: Span[] = [];
     let start = s.start, quoteOpen = false, escaped = false;
     for (let i = s.start; i < s.end; i++) {
@@ -224,7 +318,7 @@ function list(s: Span, empty = "List items cannot be empty"): Span[] {
         }
     }
     if (quoteOpen || escaped) {
-        fail("Unterminated quoted value; add a closing single quote", P(s, start));
+        fail(failures.unterminatedQuotedValue, P(s, start));
     }
     const item = trim(P(s, start));
     if (item.start === item.end) {
@@ -301,7 +395,7 @@ function conditions(s: Span): Span[] {
             else if (c === "," && !braces && !parens) {
                 const item = trim(P(s, start, i));
                 if (item.start === item.end) {
-                    fail("Logical condition members cannot be empty", P(s, i, i + 1));
+                    fail(failures.emptyLogicalConditionMember, P(s, i, i + 1));
                 }
                 result.push(item);
                 start = i + 1;
@@ -310,74 +404,114 @@ function conditions(s: Span): Span[] {
     }
     const item = trim(P(s, start));
     if (item.start === item.end) {
-        fail("Logical condition members cannot be empty", P(s, s.end), 0);
+        fail(failures.emptyLogicalConditionMember, P(s, s.end), 0);
     }
     result.push(item);
     return result;
 }
 
-/** Parse a condition from a source span. */
-function parseConditionSpan(s: Span): Condition {
+interface ConditionParseStep {
+    condition: Condition;
+    warnings: PolicyDiagnostic[];
+}
+
+/** Parse a condition from a source span, retaining warnings from nested members. */
+function parseConditionSpan(s: Span): ConditionParseStep {
     s = trim(s);
     const logical = /^(any|all)\s*\{/i.exec(T(s));
     if (logical) {
         const open = s.start + logical[0].length - 1;
         const end = brace(s, open);
         if (end < 0) {
-            fail("Unterminated logical condition; add a closing '}'", P(s, open));
+            fail(failures.unterminatedLogicalCondition, P(s, open));
         }
         if (trim(P(s, end + 1)).start !== s.end) {
-            fail("Unexpected text after logical condition", P(s, end + 1));
+            fail(failures.unexpectedTextAfterLogicalCondition, P(s, end + 1));
         }
         const body = trim(P(s, open + 1, end));
         if (body.start === body.end) {
-            fail("Logical conditions must contain at least one condition", body, 0);
+            fail(failures.emptyLogicalCondition, body, 0);
         }
-        return { kind: "logical", operator: logical[1].toLowerCase() as "any" | "all", conditions: conditions(body).map(parseConditionSpan) };
+        const members = conditions(body).map(parseConditionSpan);
+        return {
+            condition: { kind: "logical", operator: logical[1].toLowerCase() as "any" | "all", conditions: members.map((member) => member.condition) },
+            warnings: members.flatMap((member) => member.warnings),
+        };
     }
     const intersect = /^sets-intersect\(\s*([^\s,()]+)\s*,\s*([^\s,()]+)\s*\)$/i.exec(T(s));
     if (intersect) {
-        return { kind: "sets-intersect", left: intersect[1].toLowerCase(), right: intersect[2].toLowerCase() };
+        return { condition: { kind: "sets-intersect", left: intersect[1].toLowerCase(), right: intersect[2].toLowerCase() }, warnings: [] };
     }
     const match = /^([^\s=!]+)\s*(=|!=|in)\s*([\s\S]*)$/i.exec(T(s));
     if (!match) {
         const bad = /\b(?:is|equals|contains)\b/i.exec(T(s));
         if (bad && bad.index !== undefined) {
-            fail("Invalid condition operator; expected =, !=, or in", P(s, s.start + bad.index, s.start + bad.index + bad[0].length));
+            fail(failures.invalidConditionOperator, P(s, s.start + bad.index, s.start + bad.index + bad[0].length));
         }
-        fail("Expected a condition variable before the operator", s);
+        fail(failures.expectedConditionVariable, s);
     }
     const rhs = trim(P(s, s.end - match[3].length));
     if (match[2].toLowerCase() === "in") {
         if (rhs.source[rhs.start] !== "(" || rhs.source[rhs.end - 1] !== ")") {
-            fail("List conditions must use parentheses after 'in'", rhs);
+            fail(failures.listConditionNeedsParentheses, rhs);
         }
-        return { kind: "list", variable: match[1].toLowerCase(), values: list(P(rhs, rhs.start + 1, rhs.end - 1)).map((item) => quote(item) ?? fail("List values must be enclosed in single quotes", item)) };
+        const members = list(P(rhs, rhs.start + 1, rhs.end - 1));
+        const unquoted = members.filter((item) => quote(item) === undefined);
+        return {
+            condition: { kind: "list", variable: match[1].toLowerCase(), values: members.map((item) => quote(item) ?? T(item)) },
+            warnings: unquoted.map((item) => warning(warnings.quoteListMember, item)),
+        };
     }
     if (rhs.source[rhs.start] === "'") {
-        return { kind: "literal", variable: match[1].toLowerCase(), comparator: match[2] as "=" | "!=", value: quote(rhs)! };
+        return { condition: { kind: "literal", variable: match[1].toLowerCase(), comparator: match[2] as "=" | "!=", value: quote(rhs)! }, warnings: [] };
     }
     if (rhs.source[rhs.start] === "/") {
         const end = close(rhs, "/");
         if (end < 0) {
-            fail("Unterminated regular expression; add a closing '/'", rhs);
+            fail(failures.unterminatedRegularExpression, rhs);
         }
         if (trim(P(rhs, end + 1)).start !== rhs.end) {
-            fail("Unexpected text after regular expression", P(rhs, end + 1));
+            fail(failures.unexpectedTextAfterRegularExpression, P(rhs, end + 1));
         }
-        const value = decode(P(rhs, rhs.start + 1, end), "Unterminated regular expression; add a closing '/'");
+        const value = decode(P(rhs, rhs.start + 1, end), failures.unterminatedRegularExpression);
         if (!value) {
-            fail("Condition values cannot be empty", rhs);
+            fail(failures.emptyConditionValue, rhs);
         }
-        return { kind: "regex", variable: match[1].toLowerCase(), comparator: match[2] as "=" | "!=", value };
+        return { condition: { kind: "regex", variable: match[1].toLowerCase(), comparator: match[2] as "=" | "!=", value }, warnings: [] };
     }
     if (rhs.start === rhs.end || /\s|[(){}',/]/.test(T(rhs))) {
-        fail("Condition value must be a variable name, quoted string, regular expression, or quoted list", rhs);
+        fail(failures.invalidConditionValue, rhs);
     }
-    return { kind: "variable", variable: match[1].toLowerCase(), comparator: match[2] as "=" | "!=", value: T(rhs).toLowerCase() };
+    const value = T(rhs).toLowerCase();
+    return {
+        condition: { kind: "variable", variable: match[1].toLowerCase(), comparator: match[2] as "=" | "!=", value },
+        warnings: value.includes(".") ? [] : [warning(warnings.quoteComparisonValue, rhs)],
+    };
 }
+
 /** Parse one OCI IAM condition expression into its structured representation. */
-export function parseCondition(source: string): Condition { return parseConditionSpan(S(source)); }
+export function parseCondition(source: string): ConditionParseResult {
+    try {
+        const parsed = parseConditionSpan(S(source));
+        if (parsed.condition.kind === "logical") {
+            const trailing = /[ \t]+$/.exec(source)?.[0];
+            if (trailing) {
+                parsed.warnings.push({
+                    severity: "warning",
+                    message: "logical condition has trailing whitespace before its line ending",
+                    offset: source.length - trailing.length,
+                    length: trailing.length,
+                });
+            }
+        }
+        return { condition: parsed.condition, diagnostics: parsed.warnings };
+    } catch (error) {
+        if (error instanceof PolicySyntaxError) {
+            return { diagnostics: [{ severity: "error", message: error.message, offset: error.offset, length: error.length }] };
+        }
+        throw error;
+    }
+}
 
 /** Separate a principal definition from its following action clause. */
 function principalTail(s: Span, define = false): [
@@ -401,9 +535,9 @@ function principalTail(s: Span, define = false): [
         }
     }
     if (quoted || escaped) {
-        fail("Unterminated quoted value; add a closing single quote", s);
+        fail(failures.unterminatedQuotedValue, s);
     }
-    fail("Expected a policy action after the principal", P(s, s.end), 0);
+    fail(failures.expectedActionAfterPrincipal, P(s, s.end), 0);
 }
 
 /** Parse the quoted name or quoted domain/name form for group principals. */
@@ -415,15 +549,15 @@ function groupParts(s: Span): string[] | undefined {
     let at = s.start;
     while (at < s.end) {
         if (s.source[at] !== "'") {
-            fail("Group and dynamic-group names must be a quoted name or quoted domain/name pair", P(s, at));
+            fail(failures.invalidGroupPrincipalName, P(s, at));
         }
         const end = close(P(s, at), "'");
         if (end < 0) {
-            fail("Unterminated quoted value; add a closing single quote", P(s, at));
+            fail(failures.unterminatedQuotedValue, P(s, at));
         }
         const value = decode(P(s, at + 1, end));
         if (!value) {
-            fail("Condition values cannot be empty", P(s, at, end + 1));
+            fail(failures.emptyConditionValue, P(s, at, end + 1));
         }
         result.push(value);
         at = end + 1;
@@ -431,76 +565,83 @@ function groupParts(s: Span): string[] | undefined {
             break;
         }
         if (s.source[at] !== "/") {
-            fail("Group and dynamic-group names must be a quoted name or quoted domain/name pair", P(s, at));
+            fail(failures.invalidGroupPrincipalName, P(s, at));
         }
         at++;
     }
     if (result.length > 2) {
-        fail("Group and dynamic-group names must be a quoted name or quoted domain/name pair", s);
+        fail(failures.invalidGroupPrincipalName, s);
     }
     return result;
 }
 
 /** Parse and normalize the identifiers for a principal type. */
-function principalIds(s: Span, kind: PrincipalType, byId: boolean, idRange = s): string[] {
+function principalIds(s: Span, kind: PrincipalType, byId: boolean, diagnosticWarnings: PolicyDiagnostic[], warnPrincipalNames: boolean, idRange = s): string[] {
     return list(s).map((item) => {
         const parts = (kind === "group" || kind === "dynamic-group") && !byId ? groupParts(item) : undefined;
         let value = parts?.join("\0") ?? quote(item);
         if (value === undefined) {
             if (/\s/.test(T(item))) {
-                fail("Principal identifiers must be a name, quoted name, or comma-separated list", item);
+                fail(failures.invalidPrincipalIdentifier, item);
             }
             value = T(item);
         }
         if (byId) {
             if (!ocid(value)) {
-                fail("Invalid OCID for a principal specified by 'id'", idRange);
+                fail(failures.invalidPrincipalOcid, idRange);
             }
             return value.toLowerCase();
         }
         if (kind === "group" || kind === "dynamic-group") {
             if (parts) {
-                return parts.map((name) => `'${name}'`).join("/");
+                if (warnPrincipalNames && parts.length === 1) {
+                    diagnosticWarnings.push(warning(parts[0].split("/").length === 2 ? warnings.quotedSlashPrincipal : warnings.defaultIdentityDomain, item));
+                }
+                return parts.join("\0");
             }
             const names = value.split("/");
             if (names.length === 1) {
-                return `'${value}'`;
+                if (warnPrincipalNames) {
+                    diagnosticWarnings.push(warning(warnings.defaultIdentityDomain, item), warning(warnings.quotePrincipal, item));
+                }
+                return value;
             }
             if (names.length === 2 && names.every(Boolean)) {
-                return names.map((name) => `'${name}'`).join("/");
+                if (warnPrincipalNames) diagnosticWarnings.push(warning(warnings.quotePrincipal, item));
+                return names.join("\0");
             }
-            fail("Group and dynamic-group names must be a quoted name or quoted domain/name pair", item);
+            fail(failures.invalidGroupPrincipalName, item);
         }
         return kind === "tenancy" ? `'${value}'` : value.toLowerCase();
     });
 }
 
 /** Parse a statement principal and return the following action clause. */
-function principal(s: Span, type: StatementType): [
+function principal(s: Span, type: StatementType, diagnosticWarnings: PolicyDiagnostic[]): [
     Principal,
     Span
 ] {
-    const [kindSpan, rest] = take(s, "Expected a principal type");
+    const [kindSpan, rest] = take(s, failures.expectedPrincipalType);
     const kind = T(kindSpan).toLowerCase() as PrincipalType;
     if (!principalTypes.has(kind)) {
-        fail("Invalid principal type; expected group, dynamic-group, tenancy, service, any-user, or any-group", kindSpan);
+        fail(failures.invalidPrincipalType, kindSpan);
     }
     if (kind === "any-user" || kind === "any-group") {
         if (rest.start === rest.end) {
-            fail("Expected a policy action after the principal", rest, 0);
+            fail(failures.expectedActionAfterPrincipal, rest, 0);
         }
         if (key(rest, "id")) {
-            fail("The 'id' modifier cannot be used with any-user or any-group", take(rest)[0]);
+            fail(failures.idModifierForAnyPrincipal, take(rest)[0]);
         }
         const [names, tail] = principalTail(rest);
         if (/^of\s+tenancy\s+/i.test(T(names))) {
             if (type !== "admit" || !/^of\s+tenancy\s+\S+$/i.test(T(names)) || /[,{}'/]/.test(T(names).replace(/^of\s+tenancy\s+/i, ""))) {
-                fail("Cross-tenancy principals are only valid for group or dynamic-group in an admit statement, without 'id' or multiple identifiers", names);
+                fail(failures.invalidCrossTenancyPrincipal, names);
             }
             return [{ type: kind, identifiers: [T(names).toLowerCase()], reference: "literal" }, tail];
         }
         if (names.start !== names.end) {
-            fail("any-user and any-group cannot have a principal name", names);
+            fail(failures.namedAnyPrincipal, names);
         }
         return [{ type: kind, identifiers: [] }, tail];
     }
@@ -508,22 +649,22 @@ function principal(s: Span, type: StatementType): [
     const idRest = key(names, "id");
     const byId = idRest !== undefined;
     if (byId && kind !== "group" && kind !== "dynamic-group") {
-        fail("The 'id' modifier is only valid for group and dynamic-group principals", take(names)[0]);
+        fail(failures.invalidPrincipalIdModifier, take(names)[0]);
     }
     const values = idRest ?? names;
     if (values.start === values.end) {
-        fail("Expected a principal identifier", values, 0);
+        fail(failures.expectedPrincipalIdentifier, values, 0);
     }
     const cross = /^(.+?)\s+of\s+tenancy\s+(\S+)$/i.exec(T(values));
     if (cross) {
         if (type !== "admit" || byId || (kind !== "group" && kind !== "dynamic-group") || T(values).includes(",") || /[,{}'/]/.test(cross[2])) {
-            fail("Cross-tenancy principals are only valid for group or dynamic-group in an admit statement, without 'id' or multiple identifiers", values);
+            fail(failures.invalidCrossTenancyPrincipal, values);
         }
         return [{ type: kind, identifiers: [T(values).toLowerCase()], reference: "literal" }, tail];
     }
-    const ids = principalIds(values, kind, byId, names);
+    const ids = principalIds(values, kind, byId, diagnosticWarnings, type === "allow" || type === "endorse", names);
     if (kind === "tenancy" && (type !== "define" || ids.length !== 1)) {
-        fail("A tenancy principal is only valid in a define statement and must have one identifier", values);
+        fail(failures.invalidTenancyPrincipal, values);
     }
     return [{ type: kind, identifiers: ids, reference: byId ? "id" : "literal" }, tail];
 }
@@ -534,25 +675,25 @@ function permissions(s: Span, type: StatementType): [
     Span
 ] {
     if (!(type === "allow" || type === "endorse" || type === "admit")) {
-        fail("Permission lists are only valid in allow, endorse, or admit statements", s);
+        fail(failures.invalidPermissionList, s);
     }
     if (s.source[s.start] !== "{") {
-        fail("Expected a permission list enclosed in braces", s);
+        fail(failures.expectedPermissionList, s);
     }
     let end = s.start + 1;
     while (end < s.end && s.source[end] !== "}")
         end++;
     if (end === s.end) {
-        fail("Unterminated permission list; add a closing '}'", s);
+        fail(failures.unterminatedPermissionList, s);
     }
     const body = P(s, s.start + 1, end);
     if (/[{']/.test(T(body))) {
-        fail("Permission lists contain comma-separated unquoted permission names only", body);
+        fail(failures.invalidPermissionListContents, body);
     }
     const values = list(body);
     for (const value of values)
         if (/\s|[{}]/.test(T(value))) {
-            fail("Invalid permission; permission names cannot contain whitespace or braces", value);
+            fail(failures.invalidPermission, value);
         }
     return [values.map((value) => T(value).toUpperCase()), trim(P(s, end + 1))];
 }
@@ -564,13 +705,13 @@ function location(s: Span, type: StatementType, association = false): [
 ] {
     const after = key(s, "in");
     if (!after) {
-        fail("Expected a location beginning with 'in'", trim(s), 0);
+        fail(failures.expectedLocation, trim(s), 0);
     }
-    const [kindSpan, rest] = take(after, "Expected a location after 'in'");
+    const [kindSpan, rest] = take(after, failures.expectedLocationAfterIn);
     const kind = T(kindSpan).toLowerCase();
     if (kind === "any-tenancy") {
         if (type !== "endorse") {
-            fail("any-tenancy is only valid in an endorse statement", kindSpan);
+            fail(failures.invalidAnyTenancyLocation, kindSpan);
         }
         return [{ type: "any-tenancy" }, rest];
     }
@@ -580,31 +721,31 @@ function location(s: Span, type: StatementType, association = false): [
             if (association && (rest.start === rest.end || /^(with|where)\b/i.test(T(rest)))) {
                 return [{ type: "tenancy", reference: "literal" }, rest];
             }
-            const [value, tail] = take(rest, "Expected a tenancy name");
+            const [value, tail] = take(rest, failures.expectedTenancyName);
             if (/^(where|with)$/i.test(T(value))) {
-                fail("Expected a tenancy name", value);
+                fail(failures.expectedTenancyName, value);
             }
             return [{ type: "tenancy", value: T(value).toLowerCase(), reference: "literal" }, tail];
         }
         return [{ type: "tenancy", reference: "literal" }, rest];
     }
     if (kind !== "compartment") {
-        fail("Invalid location type; expected compartment or tenancy", kindSpan);
+        fail(failures.invalidLocationType, kindSpan);
     }
     const idRest = key(rest, "id");
     const byId = idRest !== undefined;
-    const [value, tail] = take(idRest ?? rest, "Expected a compartment name or OCID after 'compartment'");
+    const [value, tail] = take(idRest ?? rest, failures.expectedCompartmentName);
     if (/^(where|with)$/i.test(T(value))) {
-        fail("Expected a compartment name or OCID after 'compartment'", value);
+        fail(failures.expectedCompartmentName, value);
     }
     if (byId && !ocid(T(value))) {
-        fail("Invalid OCID for a location specified by 'id'", P(rest, rest.start, value.end));
+        fail(failures.invalidLocationOcid, P(rest, rest.start, value.end));
     }
     if (!byId && !/^[A-Za-z0-9._:-]+$/.test(T(value))) {
-        fail("Invalid location - compartment names can only be letters, numbers, periods, hyphens, and underscores", value);
+        fail(failures.invalidCompartmentName, value);
     }
     if (!byId && /(^:|:$|::)/.test(T(value))) {
-        fail("Invalid compartment path.", value);
+        fail(failures.invalidCompartmentPath, value);
     }
 
     return [{ type: "compartment", value: T(value).toLowerCase(), reference: byId ? "id" : "literal" }, tail];
@@ -618,60 +759,66 @@ function association(s: Span): [
 ] {
     const after = key(s, "with");
     if (!after) {
-        fail("Expected an association after 'with'", trim(s), 0);
+        fail(failures.expectedAssociation, trim(s), 0);
     }
-    const [resource, rest] = take(after, "Expected an associated resource after 'with'");
+    const [resource, rest] = take(after, failures.expectedAssociatedResource);
     if (!associatable.has(T(resource).toLowerCase())) {
-        fail("Invalid associated resource; expected local-peering-gateways, dns-zones, dns-views, dns-resolver, or dns-records", resource);
+        fail(failures.invalidAssociatedResource, resource);
     }
     const afterIn = key(rest, "in");
     if (!afterIn) {
-        fail("Expected an association location beginning with 'in'", rest, 0);
+        fail(failures.expectedAssociationLocation, rest, 0);
     }
-    const [kind, tail] = take(afterIn, "Expected an association location after 'in'");
+    const [kind, tail] = take(afterIn, failures.expectedAssociationLocationAfterIn);
     const type = T(kind).toLowerCase();
     if (type === "any-tenancy") {
         return [{ resource: T(resource).toLowerCase(), type: "any-tenancy" }, tail, resource];
     }
     if (type !== "compartment" && type !== "tenancy") {
-        fail("Invalid association location; expected compartment, tenancy, or any-tenancy", kind);
+        fail(failures.invalidAssociationLocation, kind);
     }
     if (T(resource).toLowerCase() !== "local-peering-gateways" && (tail.start === tail.end || /^(where|with)\b/i.test(T(tail)))) {
         return [{ resource: T(resource).toLowerCase(), type: "tenancy" }, tail, resource];
     }
-    const [value, finalTail] = take(tail, "Expected a value for the association location");
+    const [value, finalTail] = take(tail, failures.expectedAssociationLocationValue);
     return [{ resource: T(resource).toLowerCase(), type: type as "compartment" | "tenancy", value: T(value).toLowerCase() }, finalTail, resource];
 }
-/** Parse and validate one OCI IAM policy statement. */
-export function parsePolicyStatement(source: string): PolicyStatement {
+interface PolicyStatementParseStep {
+    statement: PolicyStatement;
+    warnings: PolicyDiagnostic[];
+}
+
+/** Parse and validate one OCI IAM policy statement, raising internal syntax errors. */
+function parsePolicyStatementInternal(source: string): PolicyStatementParseStep {
     const all = S(source), input = trim(all);
     if (input.start === input.end) {
-        fail("Policy statement is empty", input, 0);
+        fail(failures.emptyPolicyStatement, input, 0);
     }
     const [typeSpan, afterType] = take(input);
     const type = T(typeSpan).toLowerCase() as StatementType;
     if (!statementTypes.has(type)) {
-        fail("Invalid policy statement type; expected allow, deny, endorse, admit, or define", typeSpan);
+        fail(failures.invalidStatementType, typeSpan);
     }
-    const [who, principalTail] = principal(afterType, type);
+    const warnings: PolicyDiagnostic[] = [];
+    const [who, principalTail] = principal(afterType, type, warnings);
     let rest = principalTail;
     const parsed: PolicyStatement = { type, principal: who };
     if (type === "define") {
         if (!(who.type === "tenancy" || who.type === "group" || who.type === "dynamic-group")) {
-            fail("define statements support only tenancy, group, or dynamic-group principals", typeSpan);
+            fail(failures.invalidDefinePrincipal, typeSpan);
         }
         const definition = key(rest, "as");
         if (!definition) {
-            fail("Expected 'as' before the define OCID", rest, 0);
+            fail(failures.expectedDefineAs, rest, 0);
         }
         if (/\s/.test(T(definition))) {
-            fail("Expected one OCID after 'as' in a define statement", definition, definition.end - definition.start);
+            fail(failures.expectedDefineOcid, definition, definition.end - definition.start);
         }
         if (!ocid(T(definition))) {
-            fail("Invalid OCID in define statement", definition);
+            fail(failures.invalidDefineOcid, definition);
         }
         parsed.definition = T(definition).toLowerCase();
-        return parsed;
+        return { statement: parsed, warnings };
     }
     const afterTo = key(rest, "to");
     if (afterTo) {
@@ -680,17 +827,17 @@ export function parsePolicyStatement(source: string): PolicyStatement {
     if (rest.source[rest.start] === "{") {
         [parsed.permissions, rest] = permissions(rest, type);
     } else {
-        const [verbSpan, afterVerb] = take(rest, "Expected a policy verb");
+        const [verbSpan, afterVerb] = take(rest, failures.expectedPolicyVerb);
         const verb = T(verbSpan).toLowerCase() as Verb;
         if (!verbs.has(verb)) {
-            fail("Invalid policy verb; expected inspect, read, use, manage, or associate", verbSpan);
+            fail(failures.invalidPolicyVerb, verbSpan);
         }
-        const [resource, afterResource] = take(afterVerb, "Expected a resource after the policy verb");
+        const [resource, afterResource] = take(afterVerb, failures.expectedPolicyResource);
         if (T(resource).toLowerCase() === "in") {
-            fail("Expected a resource after the policy verb", resource);
+            fail(failures.expectedPolicyResource, resource);
         }
         if (verb === "associate" && !associatable.has(T(resource).toLowerCase())) {
-            fail("Invalid resource for associate; expected local-peering-gateways, dns-zones, dns-views, dns-resolver, or dns-records", resource);
+            fail(failures.invalidAssociateResource, resource);
         }
         parsed.verb = verb;
         parsed.resource = T(resource).toLowerCase();
@@ -702,20 +849,46 @@ export function parsePolicyStatement(source: string): PolicyStatement {
         parsed.association = associated;
         rest = tail;
         if ((parsed.resource === "local-peering-gateways") !== (associated.resource === "local-peering-gateways")) {
-            fail("The associated resource must match the resource being associated", resource);
+            fail(failures.mismatchedAssociatedResource, resource);
         }
     }
     if (rest.start !== rest.end) {
         const condition = key(rest, "where");
         if (!condition) {
-            fail("Unexpected text after the policy statement", rest);
+            fail(failures.unexpectedTextAfterStatement, rest);
         }
         if (condition.start === condition.end) {
-            fail("Expected a condition after 'where'", condition, 0);
+            fail(failures.expectedCondition, condition, 0);
         }
-        parsed.condition = parseConditionSpan(condition);
+        const parsedCondition = parseConditionSpan(condition);
+        parsed.condition = parsedCondition.condition;
+        warnings.push(...parsedCondition.warnings);
     }
-    return parsed;
+    return { statement: parsed, warnings };
+}
+
+/** Parse one statement and report syntax problems and non-fatal warnings as diagnostics. */
+export function parsePolicyStatement(source: string): PolicyParseResult {
+    try {
+        const parsed = parsePolicyStatementInternal(source);
+        if (parsed.statement.condition?.kind === "logical") {
+            const trailing = /[ \t]+$/.exec(source)?.[0];
+            if (trailing) {
+                parsed.warnings.push({
+                    severity: "warning",
+                    message: "logical condition has trailing whitespace before its line ending",
+                    offset: source.length - trailing.length,
+                    length: trailing.length,
+                });
+            }
+        }
+        return { statement: parsed.statement, diagnostics: parsed.warnings };
+    } catch (error) {
+        if (error instanceof PolicySyntaxError) {
+            return { diagnostics: [{ severity: "error", message: error.message, offset: error.offset, length: error.length }] };
+        }
+        throw error;
+    }
 }
 
 /** Render a condition using canonical OCI IAM policy syntax. */
@@ -749,7 +922,7 @@ function renderPrincipal(principal: Principal): string {
             return value;
         }
         if (principal.type === "group" || principal.type === "dynamic-group") {
-            return value.split("/").map((part) => `'${escape(part.replace(/^'|'$/g, ""), "'")}'`).join("/");
+            return value.split("\0").map((part) => `'${escape(part, "'")}'`).join("/");
         }
         if (principal.type === "tenancy") {
             return `'${escape(value.replace(/^'|'$/g, ""), "'")}'`;

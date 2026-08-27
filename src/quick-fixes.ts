@@ -1,6 +1,6 @@
 /** Conservative parser-backed quick fixes, deliberately independent of VS Code. */
 import { parsePolicyStatement } from "./policy";
-import { parserQuickFixCode, statementDiagnostic, StatementDiagnostic, StatementSpan } from "./document";
+import { parserQuickFixCode, statementDiagnostics, StatementDiagnostic, StatementSpan } from "./document";
 
 export interface StatementQuickFix {
   title: string;
@@ -41,13 +41,12 @@ export function uniqueVocabularyCorrection(value: string, candidates: readonly s
 }
 
 function isCurrent(span: StatementSpan, diagnostic: StatementDiagnostic): boolean {
-  const current = statementDiagnostic(span);
-  return current?.message === diagnostic.message && current.offset === diagnostic.offset && current.length === diagnostic.length && current.code === diagnostic.code;
+  return statementDiagnostics(span).some((current) => current.severity === diagnostic.severity && current.message === diagnostic.message && current.offset === diagnostic.offset && current.length === diagnostic.length && current.code === diagnostic.code);
 }
 
 function validEdit(span: StatementSpan, fix: StatementQuickFix): boolean {
   const revised = span.text.slice(0, fix.offset) + fix.text + span.text.slice(fix.offset + fix.length);
-  try { parsePolicyStatement(revised); return true; } catch { return false; }
+  try { return parsePolicyStatement(revised).statement !== undefined; } catch { return false; }
 }
 
 /** Return at most one safe action for a parser diagnostic on the current statement. */
@@ -65,6 +64,16 @@ export function statementQuickFix(span: StatementSpan, diagnostic: StatementDiag
     if (id) fix = { title: "Remove 'id'", offset: diagnostic.offset, length: id[0].length, text: "" };
   } else if (code === "oci-iam.fix.quote-list-member" && bad && !/[\\']/.test(bad)) {
     fix = { title: "Add single quotes", offset: diagnostic.offset, length: diagnostic.length, text: `'${bad}'` };
+  } else if (code === "oci-iam.fix.quote-comparison-value" && bad && !/[\\']/.test(bad)) {
+    fix = { title: "Add single quotes", offset: diagnostic.offset, length: diagnostic.length, text: `'${bad}'` };
+  } else if (code === "oci-iam.fix.quote-principal" && bad && !/[\\']/.test(bad)) {
+    fix = { title: "Add single quotes", offset: diagnostic.offset, length: diagnostic.length, text: bad.split("/").map((part) => `'${part}'`).join("/") };
+  } else if (code === "oci-iam.fix.add-default-domain" && bad) {
+    const name = /^'([\s\S]*)'$/.exec(bad)?.[1] ?? bad;
+    if (!/[\\']/.test(name)) fix = { title: "Specify the Default identity domain", offset: diagnostic.offset, length: diagnostic.length, text: `'Default'/'${name}'` };
+  } else if (code === "oci-iam.fix.split-quoted-principal") {
+    const name = /^'([^'\\]+\/[^'\\]+)'$/.exec(bad)?.[1];
+    if (name) fix = { title: "Specify domain and group", offset: diagnostic.offset, length: diagnostic.length, text: name.split("/").map((part) => `'${part}'`).join("/") };
   } else if (code === "oci-iam.fix.insert-in") {
     fix = { title: "Insert 'in'", offset: diagnostic.offset, length: 0, text: "in " };
   } else if (code === "oci-iam.fix.insert-with") {

@@ -1,8 +1,8 @@
 /** Document splitting and safe formatting for OCI IAM policy editor documents. */
-import { formatPolicyStatement, parsePolicyStatement, PolicySyntaxError } from "./policy";
+import { formatPolicyStatement, parsePolicyStatement, PolicyDiagnostic } from "./policy";
 
 export interface StatementSpan { start: number; end: number; text: string; }
-export interface StatementDiagnostic { message: string; offset: number; length: number; code?: string; }
+export interface StatementDiagnostic extends PolicyDiagnostic { code?: string; }
 
 /** Stable internal codes for parser diagnostics that can safely be corrected. */
 export function parserQuickFixCode(message: string): string | undefined {
@@ -16,7 +16,11 @@ export function parserQuickFixCode(message: string): string | undefined {
     "Invalid association location; expected compartment, tenancy, or any-tenancy": "oci-iam.fix.association-location",
     "Invalid OCID for a principal specified by 'id'": "oci-iam.fix.remove-principal-id",
     "Invalid OCID for a location specified by 'id'": "oci-iam.fix.remove-location-id",
-    "List values must be enclosed in single quotes": "oci-iam.fix.quote-list-member",
+    "List values should be enclosed in single quotes": "oci-iam.fix.quote-list-member",
+    "Group and dynamic-group names without an identity domain are assumed to be part of the Default identity domain. It is recommended to specify this explicitly.": "oci-iam.fix.add-default-domain",
+    "Group and dynamic-group names should be enclosed in single quotes": "oci-iam.fix.quote-principal",
+    "A quoted group or dynamic-group name is treated as a literal group name in the Default identity domain. Did you mean to specify a domain/group pairing?": "oci-iam.fix.split-quoted-principal",
+    "Unquoted condition values are treated as variables; enclose literal values for comparison in single quotes": "oci-iam.fix.quote-comparison-value",
     "Expected a location beginning with 'in'": "oci-iam.fix.insert-in",
     "Expected an association after 'with'": "oci-iam.fix.insert-with",
     "Expected 'as' before the define OCID": "oci-iam.fix.insert-as",
@@ -84,30 +88,44 @@ export function splitStatements(text: string): StatementSpan[] {
 /** Return the horizontal whitespace after a logical condition's closing brace. */
 export function logicalTrailingWhitespace(span: StatementSpan): string | undefined {
   try {
-    const statement = parsePolicyStatement(span.text);
-    if (statement.condition?.kind !== "logical") return undefined;
+    const diagnostic = parsePolicyStatement(span.text).diagnostics.find((item) => item.severity === "warning" && item.message === "logical condition has trailing whitespace before its line ending");
+    return diagnostic ? span.text.slice(diagnostic.offset, diagnostic.offset + diagnostic.length) : undefined;
   } catch {
     return undefined;
   }
-  // Newlines delimit statements and blank lines are valid document layout.
-  // Only spaces or tabs immediately before the line ending are suspicious.
-  return /[ \t]+$/.exec(span.text)?.[0];
 }
 
 /** Format valid statements only, preserving all invalid source exactly. */
 export function formatDocument(text: string): string {
   const spans = splitStatements(text); let result = ""; let cursor = 0;
-  for (const span of spans) { result += text.slice(cursor, span.start); try { result += formatPolicyStatement(parsePolicyStatement(span.text)); } catch (error) { result += span.text; } cursor = span.end; }
+  for (const span of spans) {
+    result += text.slice(cursor, span.start);
+    try {
+      const parsed = parsePolicyStatement(span.text);
+      result += parsed.statement ? formatPolicyStatement(parsed.statement) : span.text;
+    } catch {
+      result += span.text;
+    }
+    cursor = span.end;
+  }
   return result + text.slice(cursor);
 }
 
-export function statementDiagnostic(span: StatementSpan): StatementDiagnostic | undefined {
-  try { parsePolicyStatement(span.text); return undefined; } catch (error) {
-    if (error instanceof PolicySyntaxError) return { message: error.message, offset: error.offset, length: error.length, code: parserQuickFixCode(error.message) };
+/** Return every parser diagnostic for a statement span. */
+export function statementDiagnostics(span: StatementSpan): StatementDiagnostic[] {
+  try {
+    return parsePolicyStatement(span.text).diagnostics.map((diagnostic) => ({
+      ...diagnostic,
+      code: parserQuickFixCode(diagnostic.message),
+    }));
+  } catch {
     // Keep diagnostics safe even if a future parser bug escapes its normal error path.
-    return { message: "unexpected parser error", offset: span.text.length, length: 0 };
+    return [{ severity: "error", message: "unexpected parser error", offset: span.text.length, length: 0 }];
   }
 }
 
+/** Compatibility helper for callers that expect at most one diagnostic. */
+export function statementDiagnostic(span: StatementSpan): StatementDiagnostic | undefined { return statementDiagnostics(span)[0]; }
+
 /** Compatibility helper for non-diagnostic callers. */
-export function statementError(span: StatementSpan): string | undefined { return statementDiagnostic(span)?.message; }
+export function statementError(span: StatementSpan): string | undefined { return statementDiagnostics(span).find((item) => item.severity === "error")?.message; }
