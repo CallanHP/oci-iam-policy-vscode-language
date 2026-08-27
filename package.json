@@ -4,6 +4,10 @@
   "description": "Syntax highlighting, formatting, and diagnostics for OCI IAM policy statements.",
   "version": "0.1.0",
   "publisher": "local",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CallanHP/oci-iam-policy-vscode-language.git"
+  },
   "license": "MIT",
   "engines": { "vscode": "^1.95.0" },
   "categories": ["Programming Languages", "Formatters"],
