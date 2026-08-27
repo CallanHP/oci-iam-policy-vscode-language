@@ -2,6 +2,9 @@
 
 This extension adds syntax highlighting, parser-backed diagnostics, formatting, and conservative quick fixes for the OCI IAM policy statement language.
 
+> [!IMPORTANT]  
+> This parser does not validate the specific policy content, only the syntax and structure. A policy reporting no errors does not mean it is a valid OCI IAM policy.
+
 ## Use
 
 Open a policy file and select **OCI IAM Policy** from VS Code's language mode picker. The extension deliberately registers no filename extension as there is not a common offline format for OCI IAM Policies.
